@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Agua GPGPU • Patos (fullscreen) • vista centrada inferior</title>
+  <link rel="stylesheet" href="main.css">
+  <style>
+    body {
+      margin:0; background:#0b1e2a; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      overflow:hidden; /* pantalla completa sin scroll */
+    }
+    #wrap { width:100vw; height:100vh; margin:0; position:relative; overflow:hidden; }
+    #info {
+      position:absolute; left:10px; top:10px; color:#fff; z-index:10;
+      background:rgba(0,0,0,0.35); padding:8px 10px; border-radius:6px;
+      -webkit-user-select:none; user-select:none;
+    }
+    #toolbar {
+      position:absolute; right:10px; top:10px; z-index:11; display:flex; gap:8px;
+      background:rgba(0,0,0,0.35); padding:8px; border-radius:8px;
+      -webkit-user-select:none; user-select:none;
+    }
+    #toolbar button{
+      border:none; padding:6px 10px; border-radius:6px; cursor:pointer;
+      background:#e3f2fd; color:#0b1e2a; font-weight:600
+    }
+    #toolbar button:active { transform: translateY(1px); }
+    canvas { display:block; width:100%; height:100%; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+
+  <!-- VIDEO DE FONDO (no se muestra directo, se usa como textura) -->
+  <video
+    id="bgVideo"
+    src="videos/fondo.mp4"
+    autoplay
+    muted
+    loop
+    playsinline
+    style="display:none"
+  ></video>
+
+  <div id="wrap">
+    <div id="info">Patos 3D (12) • un solo sonido: <b>sonidos/quack.mp3</b> • clic para olas • pasa el mouse cerca para graznar</div>
+    <div id="toolbar">
+      <button id="btn45">45°</button>
+      <button id="btn75">75°</button>
+      <button id="btn90">90°</button>
+    </div>
+  </div>
+
+  <script id="smoothFragmentShader" type="x-shader/x-fragment">
+    uniform sampler2D smoothTexture;
+    void main() {
+      vec2 cellSize = 1.0 / resolution.xy;
+      vec2 uv = gl_FragCoord.xy * cellSize;
+      vec4 t = texture2D(smoothTexture, uv );
+      t += texture2D(smoothTexture, uv + vec2(0.0, cellSize.y));
+      t += texture2D(smoothTexture, uv + vec2(0.0, -cellSize.y));
+      t += texture2D(smoothTexture, uv + vec2(cellSize.x, 0.0));
+      t += texture2D(smoothTexture, uv + vec2(-cellSize.x, 0.0));
+      gl_FragColor = t/5.0;
+    }
+  </script>
+
+  <script id="readWaterLevelFragmentShader" type="x-shader/x-fragment">
+    uniform vec2 point1; uniform sampler2D levelTexture;
+    float sr(float v,float a){v=floor(v)+0.5;return floor(v/exp2(a));}
+    float sl(float v,float a){return floor(v*exp2(a)+0.5);}
+    float ml(float v,float b){return mod(v,sl(1.0,b));}
+    float eb(float n,float f,float t){f=floor(f+0.5);t=floor(t+0.5);return ml(sr(n,f),t-f);}
+    vec4 enc(float val){
+      if(val==0.0)return vec4(0,0,0,0);
+      float s = val>0.0?0.0:1.0; val=abs(val);
+      float e=floor(log2(val)); float be=e+127.0;
+      float fr=((val/exp2(e))-1.0)*8388608.0; float h=be/2.0;
+      float l=fract(h)*2.0; float r=floor(h);
+      return vec4( eb(fr,0.0,8.0), eb(fr,8.0,16.0),
+                   (l*128.0+eb(fr,16.0,23.0)), (s*128.0+r) )/255.0;
+    }
+    void main(){
+      vec2 cs=1.0/resolution.xy; vec2 uv=point1;
+      float level=texture2D(levelTexture,uv).x;
+      vec2 normal=vec2(
+        (texture2D(levelTexture,uv+vec2(-cs.x,0)).x-texture2D(levelTexture,uv+vec2(cs.x,0)).x)*WIDTH/BOUNDS_X,
+        (texture2D(levelTexture,uv+vec2(0,-cs.y)).x-texture2D(levelTexture,uv+vec2(0,cs.y)).x)*WIDTH/BOUNDS_Z
+      );
+      if(gl_FragCoord.x<1.5) gl_FragColor=enc(level);
+      else if(gl_FragCoord.x<2.5) gl_FragColor=enc(normal.x);
+      else if(gl_FragCoord.x<3.5) gl_FragColor=enc(normal.y);
+      else gl_FragColor=enc(0.0);
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import Stats from 'https://unpkg.com/three@0.160.0/examples/jsm/libs/stats.module.js';
+    import { GUI } from 'https://unpkg.com/three@0.160.0/examples/jsm/libs/lil-gui.module.min.js';
+    import { GPUComputationRenderer } from 'https://unpkg.com/three@0.160.0/examples/jsm/misc/GPUComputationRenderer.js';
+    import { SimplexNoise } from 'https://unpkg.com/three@0.160.0/examples/jsm/math/SimplexNoise.js';
+    import { RGBELoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/RGBELoader.js';
+
+    // Fullscreen
+    let VIEW_W = window.innerWidth;
+    let VIEW_H = window.innerHeight;
+
+    // === Estanque (tamaño actual) ===
+    const WIDTH=128;
+    const BOUNDS_X=30.8, BOUNDS_Z=15.0;
+    const HALF_X=BOUNDS_X*0.5, HALF_Z=BOUNDS_Z*0.5;
+
+    const NUM_DUCK=12;
+
+    // HDR para reflejos en el agua (lo dejamos tal cual)
+    const HDR_URL='https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/forest_slope_1k.hdr';
+
+    let container=document.getElementById('wrap'), renderer, scene, camera, stats;
+    let gpuCompute, heightmapVariable, tmpHeightmap=null;
+    let waterMesh, meshRay, poolBorder;
+    let mousedown=false, mouseCoords=new THREE.Vector2();
+    const simplex=new SimplexNoise(); let sun; let frame=0;
+    const ducks=[], tmpQuat=new THREE.Quaternion(), tmpQuatX=new THREE.Quaternion(), tmpQuatZ=new THREE.Quaternion();
+    const waterNormal=new THREE.Vector3();
+    const effectController={ mouseSize:0.2, mouseDeep:0.01, viscosity:0.93, speed:5, ducksEnabled:true, wireframe:false, shadow:false };
+    let readWaterLevelShader, readWaterLevelRenderTarget;
+
+    // Audio
+    const QUACK_FILE = 'sonidos/quack.mp3';
+    let listener, audioLoader, quackBuffer=null;
+    let pointerWorld = new THREE.Vector2(9999,9999);
+    let pointerHasPoint = false;
+    let lastQuackTime = 0;
+    const QUACK_THROTTLE = 0.18;
+
+    // Cámara
+    const CAMERA_RADIUS = 11.0;
+    let cameraAzimuthDeg = 90;
+    let currentElevDeg   = 30;
+
+    let viewCenter = new THREE.Vector2(0, 0);
+    let panTweenActive = false;
+    const CAMERA_BASE_Z = -1.2;
+
+    function setTopDownCamera(){
+      const y = CAMERA_RADIUS + 2.5;
+      camera.position.set(viewCenter.x, y, viewCenter.y + CAMERA_BASE_Z);
+      camera.lookAt(viewCenter.x, -1.0, viewCenter.y);
+    }
+
+    function targetZFromDeg(deg){
+      const t = THREE.MathUtils.clamp((90 - deg) / 45, 0, 1);
+      const maxShift = HALF_Z * 0.35;
+      return THREE.MathUtils.lerp(0, -maxShift, t);
+    }
+
+    function animatePanToDeg(deg, duration=800){
+      if (panTweenActive) return;
+      panTweenActive = true;
+      const z0 = viewCenter.y;
+      const z1 = targetZFromDeg(deg);
+      const t0 = performance.now();
+
+      function easeInOutCubic(t){ return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+
+      function step(now){
+        const t = Math.min(1, (now - t0) / duration);
+        const k = easeInOutCubic(t);
+        viewCenter.y = z0 + (z1 - z0) * k;
+        setTopDownCamera();
+        if (t < 1) requestAnimationFrame(step);
+        else panTweenActive = false;
+      }
+      requestAnimationFrame(step);
+    }
+
+    function setCameraAngleDeg(elevDeg){
+      const elev = THREE.MathUtils.degToRad(elevDeg);
+      const az   = THREE.MathUtils.degToRad(cameraAzimuthDeg);
+      const r    = CAMERA_RADIUS;
+      const x = r * Math.cos(elev) * Math.cos(az);
+      const y = r * Math.sin(elev) + 2.5;
+      const z = r * Math.cos(elev) * Math.sin(az) - 1.2;
+      if(!camera) return;
+      camera.position.set(x, y, z);
+      camera.lookAt(0, -1.0, 0);
+    }
+
+    init();
+
+    async function init(){
+      camera = new THREE.PerspectiveCamera(60, VIEW_W/VIEW_H, 0.1, 1000);
+      setCameraAngleDeg(currentElevDeg);
+      scene = new THREE.Scene();
+
+      // Luz principal
+      sun=new THREE.DirectionalLight(0xffffff,4.0);
+      sun.position.set(-1,2.6,1.4);
+      scene.add(sun);
+
+      // RENDERER
+      renderer=new THREE.WebGLRenderer({antialias:true});
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(VIEW_W,VIEW_H);
+      renderer.toneMapping=THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure=0.5;
+      container.appendChild(renderer.domElement);
+
+      window.addEventListener('resize', ()=>{
+        VIEW_W = window.innerWidth;
+        VIEW_H = window.innerHeight;
+        camera.aspect = VIEW_W / VIEW_H;
+        camera.updateProjectionMatrix();
+        renderer.setSize(VIEW_W, VIEW_H);
+        setCameraAngleDeg(currentElevDeg);
+      });
+
+      // STATS
+      stats=new Stats();
+      stats.dom.style.left='0px';
+      stats.dom.style.top='0px';
+      container.appendChild(stats.dom);
+
+      // INPUT
+      container.style.touchAction='none';
+      container.addEventListener('pointermove', onPointerMove);
+      container.addEventListener('pointerdown', ()=> { mousedown=true; resumeAudio(); });
+      container.addEventListener('pointerup',   ()=> { mousedown=false; });
+
+      // Botones de cámara (perfil/distintos ángulos)
+      document.getElementById('btn45').addEventListener('click', ()=>{
+        currentElevDeg = 45;
+        setCameraAngleDeg(currentElevDeg);
+      });
+      document.getElementById('btn75').addEventListener('click', ()=>{
+        currentElevDeg = 30;
+        setCameraAngleDeg(currentElevDeg);
+      });
+      document.getElementById('btn90').addEventListener('click', ()=>{
+        currentElevDeg = 20;
+        setCameraAngleDeg(currentElevDeg);
+      });
+
+      // AUDIO
+      listener = new THREE.AudioListener();
+      camera.add(listener);
+      audioLoader = new THREE.AudioLoader();
+      try{
+        quackBuffer = await new Promise((resolve,reject)=>{
+          audioLoader.load(QUACK_FILE, resolve, undefined, reject);
+        });
+      }catch(e){ console.warn('No se pudo cargar sonidos/quack.mp3', e); }
+
+      // HDR SOLO PARA ILUMINAR / REFLEJOS (mantenemos esto)
+      try{
+        const env=await new RGBELoader().loadAsync(HDR_URL);
+        env.mapping=THREE.EquirectangularReflectionMapping;
+        scene.environment=env;
+        scene.background = null; // fondo real será el video, no el HDR
+        scene.environmentIntensity=1.25;
+      }catch(e){
+        console.warn('No se pudo cargar el HDR, usando color de fondo.', e);
+        scene.environment=null;
+      }
+
+      // ===== VIDEO DE FONDO EN UN PLANO VERTICAL DETRÁS DEL ESTANQUE =====
+      // ===== VIDEO DE FONDO EN UN PLANO VERTICAL DETRÁS DEL ESTANQUE =====
+const videoEl = document.getElementById('bgVideo');
+videoEl.play().catch(()=>{ /* algunos navegadores piden interacción */ });
+
+const videoTexture = new THREE.VideoTexture(videoEl);
+videoTexture.colorSpace = THREE.SRGBColorSpace;
+videoTexture.minFilter = THREE.LinearFilter;
+videoTexture.magFilter = THREE.LinearFilter;
+
+// Tamaño del video: un poco más ancho que el lago y más bajo
+        const fondoWidth  = BOUNDS_X + 4;  // un poquito más ancho que el estanque
+        const fondoHeight = 6;             // altura del video
+
+        const fondoGeo = new THREE.PlaneGeometry(fondoWidth, fondoHeight);
+        const fondoMat = new THREE.MeshBasicMaterial({
+          map: videoTexture,
+          side: THREE.DoubleSide
+        });
+
+        const fondoMesh = new THREE.Mesh(fondoGeo, fondoMat);
+
+        // Queremos que el video empiece justo desde la parte de arriba del marco del lago.
+        // El borde llega más o menos hasta y ≈ 0.28, así que dejamos la parte de abajo ahí.
+        const bordeTopY = 0.28;
+        fondoMesh.position.set(
+          0,
+          bordeTopY + fondoHeight / 2,    // centro del plano más arriba del borde
+          -BOUNDS_Z / 2 - 0.6             // justo detrás de la pared del fondo
+        );
+
+        scene.add(fondoMesh);
+
+
+      initWater();       // agua, borde, etc. (no lo tocamos)
+      createDucks3D();   // patos (no los tocamos)
+      setupGUI();
+
+      renderer.setAnimationLoop(()=>{ render(); stats.update(); });
+    }
+
+    function resumeAudio(){
+      if(listener && listener.context && listener.context.state === 'suspended'){
+        listener.context.resume();
+      }
+    }
+
+    function setupGUI(){
+      const gui=new GUI();
+      gui.domElement.style.right='0px';
+      const valuesChanger=()=>{
+        heightmapVariable.material.uniforms['mouseSize'].value=effectController.mouseSize;
+        heightmapVariable.material.uniforms['deep'].value=effectController.mouseDeep;
+        heightmapVariable.material.uniforms['viscosity'].value=effectController.viscosity;
+        ducks.forEach(d=> d.visible=effectController.ducksEnabled);
+      };
+      gui.add(effectController,'mouseSize',0.1,1.0,0.1).onChange(valuesChanger);
+      gui.add(effectController,'mouseDeep',0.01,1.0,0.01).onChange(valuesChanger);
+      gui.add(effectController,'viscosity',0.9,0.999,0.001).onChange(valuesChanger);
+      gui.add(effectController,'speed',1,6,1);
+      gui.add(effectController,'ducksEnabled').name('ducksEnabled (patos)').onChange(valuesChanger);
+      gui.add(effectController,'wireframe').onChange(v=>{
+        waterMesh.material.wireframe=v;
+        poolBorder.children.forEach(c=> c.material.wireframe=v);
+      });
+      gui.add(effectController,'shadow').onChange(addShadow);
+      valuesChanger();
+    }
+
+    function onPointerMove(e){
+      const rect=renderer.domElement.getBoundingClientRect();
+      mouseCoords.set(((e.clientX-rect.left)/rect.width)*2-1, -((e.clientY-rect.top)/rect.height)*2+1);
+    }
+
+    // Árboles (ya no los uso, pero dejo la función por si luego quieres volver a ponerlos)
+    function crearArbol(x, z){
+      const troncoGeo = new THREE.CylinderGeometry(0.12, 0.16, 1.4, 12);
+      const copaGeo   = new THREE.SphereGeometry(0.9, 20, 16);
+
+      const troncoMat = new THREE.MeshStandardMaterial({ color: 0x5a3c1b, roughness: 0.8 });
+      const copaMat   = new THREE.MeshStandardMaterial({ color: 0x1f7a2e, roughness: 0.5 });
+
+      const tronco = new THREE.Mesh(troncoGeo, troncoMat);
+      const copa   = new THREE.Mesh(copaGeo, copaMat);
+
+      const arbol = new THREE.Group();
+      tronco.position.y = 0.7;
+      copa.position.y   = 1.7;
+
+      arbol.add(tronco);
+      arbol.add(copa);
+
+      arbol.position.set(x, 0, z);
+      arbol.castShadow = true;
+      arbol.receiveShadow = true;
+
+      arbol.traverse(o => {
+        if (o.isMesh){
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+
+      scene.add(arbol);
+    }
+
+    function initWater(){
+      const geometry=new THREE.PlaneGeometry(BOUNDS_X,BOUNDS_Z,WIDTH-1,WIDTH-1);
+      const material=new WaterMaterial({
+        color:0x9bd2ec,
+        metalness:0.9,
+        roughness:0,
+        transparent:true,
+        opacity:0.85,
+        side:THREE.DoubleSide
+      });
+      waterMesh=new THREE.Mesh(geometry,material);
+      waterMesh.rotation.x=-Math.PI*0.5;
+      waterMesh.matrixAutoUpdate=false;
+      waterMesh.updateMatrix();
+      scene.add(waterMesh);
+
+      // Marco más grueso
+      poolBorder=new THREE.Group();
+      const railH=0.28, railT=0.26;
+      const m=new THREE.MeshStandardMaterial({color:0x908877, roughness:0.2});
+      const railLong=new THREE.Mesh(new THREE.BoxGeometry(BOUNDS_X+railT*2, railH, railT), m);
+      const railShort=new THREE.Mesh(new THREE.BoxGeometry(railT, railH, BOUNDS_Z+railT*2), m);
+      const r1=railLong.clone(); r1.position.set(0,railH/2,  BOUNDS_Z/2+railT/2);
+      const r2=railLong.clone(); r2.position.set(0,railH/2, -BOUNDS_Z/2-railT/2);
+      const r3=railShort.clone(); r3.position.set( BOUNDS_X/2+railT/2, railH/2, 0);
+      const r4=railShort.clone(); r4.position.set(-BOUNDS_X/2-railT/2, railH/2, 0);
+      poolBorder.add(r1,r2,r3,r4);
+
+      const wallH = 0.20, wallT = 0.10;
+      const mwall = new THREE.MeshStandardMaterial({color:0x7f756a, roughness:0.35});
+      const wallLong=new THREE.Mesh(new THREE.BoxGeometry(BOUNDS_X, wallH, wallT), mwall);
+      const wallShort=new THREE.Mesh(new THREE.BoxGeometry(wallT, wallH, BOUNDS_Z), mwall);
+      const w1=wallLong.clone(); w1.position.set(0, wallH/2,  BOUNDS_Z/2 - wallT/2);
+      const w2=wallLong.clone(); w2.position.set(0, wallH/2, -BOUNDS_Z/2 + wallT/2);
+      const w3=wallShort.clone(); w3.position.set( BOUNDS_X/2 - wallT/2, wallH/2, 0);
+      const w4=wallShort.clone(); w4.position.set(-BOUNDS_X/2 + wallT/2, wallH/2, 0);
+      poolBorder.add(w1,w2,w3,w4);
+
+      scene.add(poolBorder);
+
+      // *** IMPORTANTE: quitamos el césped y los árboles viejos para que se vea el video ***
+      // (si los quieres de nuevo, solo descomentas esto)
+      /*
+      const grassGeo = new THREE.PlaneGeometry(80, 80);
+      const grassMat = new THREE.MeshStandardMaterial({
+        color: 0x1f5d1f,
+        roughness: 0.9,
+        metalness: 0.0
+      });
+      const grass = new THREE.Mesh(grassGeo, grassMat);
+      grass.rotation.x = -Math.PI / 2;
+      grass.position.y = -0.03;
+      grass.receiveShadow = true;
+      scene.add(grass);
+
+      crearArbol( 18,  8);
+      crearArbol(-18,  8);
+      crearArbol( 18, -8);
+      crearArbol(-18, -8);
+      crearArbol(  0, 11);
+      crearArbol(  0,-11);
+      */
+
+      const geometryRay=new THREE.PlaneGeometry(BOUNDS_X,BOUNDS_Z,1,1);
+      meshRay=new THREE.Mesh(geometryRay,new THREE.MeshBasicMaterial({visible:false}));
+      meshRay.rotation.x=-Math.PI/2;
+      meshRay.matrixAutoUpdate=false;
+      meshRay.updateMatrix();
+      scene.add(meshRay);
+
+      const gpu = new GPUComputationRenderer(WIDTH,WIDTH,renderer);
+      gpuCompute=gpu;
+      const heightmap0=gpuCompute.createTexture();
+      fillTexture(heightmap0);
+      heightmapVariable=gpuCompute.addVariable('heightmap', shaderChange.heightmap_frag, heightmap0);
+      gpuCompute.setVariableDependencies(heightmapVariable,[heightmapVariable]);
+      heightmapVariable.material.uniforms['mousePos']={value: new THREE.Vector2(10000,10000)};
+      heightmapVariable.material.uniforms['mouseSize']={value: 0.2};
+      heightmapVariable.material.uniforms['viscosity']={value: 0.93};
+      heightmapVariable.material.uniforms['deep']={value: 0.01};
+      heightmapVariable.material.defines.BOUNDS_X=BOUNDS_X.toFixed(1);
+      heightmapVariable.material.defines.BOUNDS_Z=BOUNDS_Z.toFixed(1);
+      const error=gpuCompute.init();
+      if(error) console.error(error);
+
+      readWaterLevelShader=gpuCompute.createShaderMaterial(
+        document.getElementById('readWaterLevelFragmentShader').textContent,
+        { point1:{value:new THREE.Vector2()}, levelTexture:{value:null} }
+      );
+      readWaterLevelShader.defines.WIDTH=WIDTH.toFixed(1);
+      readWaterLevelShader.defines.BOUNDS_X=BOUNDS_X.toFixed(1);
+      readWaterLevelShader.defines.BOUNDS_Z=BOUNDS_Z.toFixed(1);
+      readWaterLevelRenderTarget=new THREE.WebGLRenderTarget(4,1,{
+        wrapS:THREE.ClampToEdgeWrapping,
+        wrapT:THREE.ClampToEdgeWrapping,
+        minFilter:THREE.NearestFilter,
+        magFilter:THREE.NearestFilter,
+        format:THREE.RGBAFormat,
+        type:THREE.UnsignedByteType,
+        depthBuffer:false
+      });
+    }
+
+    function fillTexture(texture){
+      const waterMaxHeight=0.1, pixels=texture.image.data;
+      function noise(x,y){
+        let multR=waterMaxHeight, mult=0.025, r=0;
+        for(let i=0;i<12;i++){
+          r+=multR*simplex.noise(x*mult,y*mult);
+          multR*=0.58; mult*=1.25;
+        }
+        return r;
+      }
+      let p=0;
+      for(let j=0;j<WIDTH;j++){
+        for(let i=0;i<WIDTH;i++){
+          const x=i*128/WIDTH, y=j*128/WIDTH;
+          pixels[p]=noise(x,y);
+          pixels[p+1]=pixels[p];
+          pixels[p+2]=0;
+          pixels[p+3]=1;
+          p+=4;
+        }
+      }
+    }
+
+    function buildRubberDuck(bodyHex=0xffdd17){
+      const duck = new THREE.Group();
+      const bodyMat = new THREE.MeshPhysicalMaterial({
+        color: bodyHex, roughness: 0.15, metalness: 0,
+        clearcoat: 1.0, clearcoatRoughness: 0.08
+      });
+      const orange = new THREE.MeshPhysicalMaterial({
+        color: 0xff7a1a, roughness: 0.2, metalness: 0, clearcoat: 0.3
+      });
+      const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.3, roughness: 0.1 });
+      const white  = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35 });
+
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.42, 40, 32), bodyMat);
+      body.scale.set(1.25, 1.0, 1.1);
+      body.position.set(0, 0.22, 0);
+      duck.add(body);
+
+      const neck = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.06, 8, 20), bodyMat);
+      neck.rotation.z = -0.18;
+      neck.position.set(0.06, 0.40, 0.10);
+      duck.add(neck);
+
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 36, 28), bodyMat);
+      head.position.set(0.18, 0.56, 0.16);
+      duck.add(head);
+
+      const upperBeak = new THREE.Mesh(new THREE.SphereGeometry(0.12, 28, 20), orange);
+      upperBeak.scale.set(1.45, 0.55, 0.8);
+      upperBeak.position.set(0.32, 0.51, 0.26);
+      duck.add(upperBeak);
+
+      const lowerBeak = new THREE.Mesh(new THREE.SphereGeometry(0.11, 24, 18), orange);
+      lowerBeak.scale.set(1.1, 0.45, 0.75);
+      lowerBeak.position.set(0.31, 0.47, 0.24);
+      duck.add(lowerBeak);
+
+      const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.035, 16, 12), eyeMat);
+      eyeL.position.set(0.11, 0.58, 0.27);
+      const eyeR = eyeL.clone(); eyeR.position.set(0.22, 0.585, 0.10);
+      duck.add(eyeL, eyeR);
+
+      const sparkL = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 8), white);
+      sparkL.position.set(0.125, 0.595, 0.285);
+      const sparkR = sparkL.clone(); sparkR.position.set(0.235, 0.60, 0.115);
+      duck.add(sparkL, sparkR);
+
+      const wingL = new THREE.Mesh(new THREE.SphereGeometry(0.2, 28, 22), bodyMat);
+      wingL.scale.set(0.52, 0.62, 0.28);
+      wingL.position.set(-0.17, 0.30, 0.05);
+      wingL.rotation.z = 0.62;
+      const wingR = wingL.clone();
+      wingR.position.x *= -1;
+      wingR.rotation.z = -0.62;
+      duck.add(wingL, wingR);
+
+      const tail = new THREE.Mesh(new THREE.SphereGeometry(0.18, 24, 18), bodyMat);
+      tail.scale.set(0.48, 0.36, 0.26);
+      tail.position.set(-0.32, 0.26, -0.10);
+      tail.rotation.z = -0.45;
+      duck.add(tail);
+
+      duck.scale.set(1, 1, 1);
+
+      duck.userData.head = head;
+      duck.userData.upperBeak = upperBeak;
+      duck.userData.lowerBeak = lowerBeak;
+      duck.userData.wings = [wingL, wingR];
+      duck.userData.phase = Math.random() * Math.PI * 2;
+
+      const audio = new THREE.PositionalAudio(listener);
+      audio.setRefDistance(1.0);
+      audio.setRolloffFactor(1.2);
+      audio.setDistanceModel('exponential');
+      audio.setLoop(false);
+      audio.setVolume(0.70);
+      duck.add(audio);
+      duck.userData.audio = audio;
+      duck.userData.cooldown = 0;
+
+      duck.traverse(o => {
+        if (o.isMesh){
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+      return duck;
+    }
+
+    function createDucks3D(){
+      const duckColors = [
+        0xffdd17,0xffdd17,0xffdd17,
+        0xffffff,0xffffff,0xffffff,
+        0x8b5a2b,0x8b5a2b,0x8b5a2b,
+        0x9da4ad,0x9da4ad,0x9da4ad
+      ];
+      for(let i=0;i<NUM_DUCK;i++){
+        const colorHex = duckColors[i % duckColors.length];
+        const d=buildRubberDuck(colorHex);
+        if(quackBuffer){ d.userData.audio.setBuffer(quackBuffer); }
+        d.position.x=(Math.random()-0.5)*BOUNDS_X*0.7;
+        d.position.z=(Math.random()-0.5)*BOUNDS_Z*0.7;
+        d.userData.velocity=new THREE.Vector3();
+        scene.add(d);
+        ducks.push(d);
+      }
+    }
+
+    function floatDynamics(list){
+      if(!tmpHeightmap) return;
+      const readWaterLevelShader=gpuCompute.createShaderMaterial(
+        document.getElementById('readWaterLevelFragmentShader').textContent,
+        { point1:{value:new THREE.Vector2()}, levelTexture:{value:tmpHeightmap} }
+      );
+      readWaterLevelShader.defines.WIDTH=WIDTH.toFixed(1);
+      readWaterLevelShader.defines.BOUNDS_X=BOUNDS_X.toFixed(1);
+      readWaterLevelShader.defines.BOUNDS_Z=BOUNDS_Z.toFixed(1);
+      const rt=new THREE.WebGLRenderTarget(4,1,{
+        minFilter:THREE.NearestFilter,
+        magFilter:THREE.NearestFilter,
+        format:THREE.RGBAFormat,
+        type:THREE.UnsignedByteType
+      });
+      for(const obj of list){
+        const u=0.5*obj.position.x/HALF_X+0.5;
+        const v=1-(0.5*obj.position.z/HALF_Z+0.5);
+        readWaterLevelShader.uniforms['point1'].value.set(u,v);
+        gpuCompute.doRenderTarget(readWaterLevelShader, rt);
+        const arr=new Uint8Array(16);
+        renderer.readRenderTargetPixels(rt,0,0,4,1,arr);
+        const px=new Float32Array(arr.buffer);
+        const pos=obj.position, startPos=pos.clone();
+        const normal = new THREE.Vector3(px[1],1,-px[2]).normalize();
+        pos.y=px[0];
+        waterNormal.set(px[1],0,-px[2]).multiplyScalar(0.010);
+        obj.userData.velocity.add(waterNormal);
+        obj.userData.velocity.multiplyScalar(0.998);
+        pos.add(obj.userData.velocity);
+        const decal=0.001, limitX=HALF_X-0.2, limitZ=HALF_Z-0.2;
+        if(pos.x<-limitX){ pos.x=-limitX+decal; obj.userData.velocity.x*=-0.3; }
+        else if(pos.x>limitX){ pos.x=limitX-decal; obj.userData.velocity.x*=-0.3; }
+        if(pos.z<-limitZ){ pos.z=-limitZ+decal; obj.userData.velocity.z*=-0.3; }
+        else if(pos.z>limitZ){ pos.z=limitZ-decal; obj.userData.velocity.z*=-0.3; }
+        const dir=startPos.sub(pos);
+        dir.y=0;
+        dir.normalize();
+        const yAxis=new THREE.Vector3(0,1,0), zAxis=new THREE.Vector3(0,0,-1);
+        tmpQuatX.setFromUnitVectors(zAxis, dir.lengthSq()>0?dir:zAxis);
+        tmpQuatZ.setFromUnitVectors(yAxis, normal);
+        tmpQuat.multiplyQuaternions(tmpQuatZ,tmpQuatX);
+        obj.quaternion.slerp(tmpQuat, 0.017);
+      }
+      rt.dispose();
+      readWaterLevelShader.dispose();
+    }
+
+    function addShadow(v){
+      renderer.shadowMap.enabled=v;
+      sun.castShadow=v;
+      if(v){
+        renderer.shadowMap.type=THREE.VSMShadowMap;
+        const s=6, sh=sun.shadow;
+        sh.mapSize.width=sh.mapSize.height=2048;
+        sh.radius=2;
+        sh.bias=-0.0005;
+        const cam=sh.camera;
+        cam.near=0.1; cam.far=12;
+        cam.right=cam.top=s;
+        cam.left=cam.bottom=-s;
+      } else if(sun.shadow){
+        sun.shadow.dispose();
+      }
+    }
+
+    function raycastUpdate(){
+      if(!heightmapVariable) return;
+      const uniforms=heightmapVariable.material.uniforms;
+      if(mousedown){
+        const ray=new THREE.Raycaster();
+        ray.setFromCamera(mouseCoords,camera);
+        const hit=ray.intersectObject(meshRay);
+        if(hit.length>0){
+          const pt=hit[0].point;
+          uniforms['mousePos'].value.set(pt.x,pt.z);
+        } else {
+          uniforms['mousePos'].value.set(10000,10000);
+        }
+      } else {
+        uniforms['mousePos'].value.set(10000,10000);
+      }
+    }
+
+    function updatePointerWorld(){
+      const ray=new THREE.Raycaster();
+      ray.setFromCamera(mouseCoords,camera);
+      const hit=ray.intersectObject(meshRay);
+      if(hit.length>0){
+        pointerWorld.set(hit[0].point.x, hit[0].point.z);
+        pointerHasPoint = true;
+      } else {
+        pointerHasPoint = false;
+      }
+    }
+
+    function maybeTriggerQuacks(timeSec){
+      if(!pointerHasPoint || !quackBuffer) return;
+      if(timeSec - lastQuackTime < QUACK_THROTTLE) return;
+      for(const d of ducks){
+        d.userData.cooldown = Math.max(0, d.userData.cooldown - 1/60);
+        const dx = d.position.x - pointerWorld.x;
+        const dz = d.position.z - pointerWorld.y;
+        const dist = Math.hypot(dx,dz);
+        if(dist < 0.75 && d.userData.cooldown<=0){
+          const audio = d.userData.audio;
+          if(audio && audio.buffer && !audio.isPlaying){
+            audio.setPlaybackRate(0.9 + Math.random()*0.25);
+            audio.play();
+            d.userData.cooldown = 1.1;
+            lastQuackTime = timeSec;
+            break;
+          }
+        }
+      }
+    }
+
+    function animateStep(){
+      gpuCompute.compute();
+      tmpHeightmap=gpuCompute.getCurrentRenderTarget(heightmapVariable).texture;
+      if(waterMesh) waterMesh.material.heightmap=tmpHeightmap;
+    }
+
+    function animateCritters(timeSec){
+      for(const d of ducks){
+        if(!d.visible) continue;
+        const t = timeSec + d.userData.phase;
+        if (d.userData.head)       d.userData.head.rotation.z = Math.sin(t*2.2) * 0.25;
+        if (d.userData.upperBeak)  d.userData.upperBeak.rotation.x = 0.10 + Math.sin(t*3.0) * 0.06;
+        if (d.userData.lowerBeak)  d.userData.lowerBeak.rotation.x = 0.03 + Math.sin(t*3.0 + 0.7) * 0.05;
+        if (d.userData.wings){
+          d.userData.wings[0].rotation.z = 0.62 + Math.sin(t*1.7)*0.18;
+          d.userData.wings[1].rotation.z = -0.62 - Math.sin(t*1.7)*0.18;
+        }
+      }
+    }
+
+    function render(){
+      raycastUpdate();
+      updatePointerWorld();
+
+      frame++;
+      if(frame>=7-effectController.speed){
+        animateStep();
+        frame=0;
+      }
+
+      if(effectController.ducksEnabled) floatDynamics(ducks);
+      const tSec = performance.now()/1000;
+      animateCritters(tSec);
+      maybeTriggerQuacks(tSec);
+
+      renderer.render(scene,camera);
+    }
+
+    class WaterMaterial extends THREE.MeshStandardMaterial{
+      constructor(parameters){
+        super();
+        this.defines={
+          'STANDARD':'',
+          'USE_UV':'',
+          'WIDTH':WIDTH.toFixed(1),
+          'BOUNDS_X':BOUNDS_X.toFixed(1),
+          'BOUNDS_Z':BOUNDS_Z.toFixed(1)
+        };
+        this.extra={};
+        this.addParameter('heightmap',null);
+        this.setValues(parameters);
+      }
+      addParameter(name,value){
+        this.extra[name]=value;
+        Object.defineProperty(this,name,{
+          get:()=>this.extra[name],
+          set:(v)=>{
+            this.extra[name]=v;
+            if(this.userData.shader) this.userData.shader.uniforms[name].value=v;
+          }
+        });
+      }
+      onBeforeCompile(shader){
+        for(const n in this.extra){
+          shader.uniforms[n]={value:this.extra[n]};
+        }
+        shader.vertexShader=shader.vertexShader.replace('#include <common>', shaderChange.common);
+        shader.vertexShader=shader.vertexShader.replace('#include <beginnormal_vertex>', shaderChange.beginnormal_vertex);
+        shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>', shaderChange.begin_vertex);
+        this.userData.shader=shader;
+      }
+    }
+
+    const shaderChange={
+      heightmap_frag:`
+        #include <common>
+        uniform vec2 mousePos;
+        uniform float mouseSize;
+        uniform float viscosity;
+        uniform float deep;
+        void main(){
+          vec2 cs=1.0/resolution.xy;
+          vec2 uv=gl_FragCoord.xy*cs;
+          vec4 hm=texture2D(heightmap,uv);
+          vec4 n=texture2D(heightmap, uv+vec2(0.0, cs.y));
+          vec4 s=texture2D(heightmap, uv+vec2(0.0,-cs.y));
+          vec4 e=texture2D(heightmap, uv+vec2(cs.x,0.0));
+          vec4 w=texture2D(heightmap, uv+vec2(-cs.x,0.0));
+          float nh=((n.x+s.x+e.x+w.x)*0.5 - hm.y)*viscosity;
+          float ph=clamp(length((uv-vec2(0.5))*vec2(BOUNDS_X,BOUNDS_Z)-vec2(mousePos.x,-mousePos.y))*PI/mouseSize,0.0,PI);
+          nh -= (cos(ph)+1.0)*deep;
+          hm.y=hm.x;
+          hm.x=nh;
+          gl_FragColor=hm;
+        }
+      `,
+      common:`#include <common>
+uniform sampler2D heightmap;`,
+      beginnormal_vertex:`
+        vec2 cs=vec2(1.0/WIDTH,1.0/WIDTH);
+        vec3 objectNormal=vec3(
+          (texture2D(heightmap, uv+vec2(-cs.x,0)).x - texture2D(heightmap, uv+vec2(cs.x,0)).x)*WIDTH/BOUNDS_X,
+          (texture2D(heightmap, uv+vec2(0,-cs.y)).x - texture2D(heightmap, uv+vec2(0,cs.y)).x)*WIDTH/BOUNDS_Z,
+          1.0);
+      `,
+      begin_vertex:`
+        float heightValue=texture2D(heightmap, uv).x;
+        vec3 transformed=vec3(position.x, position.y, heightValue);
+      `
+    };
+  </script>
+</body>
+</html>
