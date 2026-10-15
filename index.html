@@ -1,4 +1,6 @@
-<!DOCTYPE html>
+from pathlib import Path
+
+html = r'''<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="utf-8" />
@@ -8,7 +10,7 @@
   <style>
     body {
       margin:0; background:#0b1e2a; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      overflow:hidden; /* pantalla completa sin scroll */
+      overflow:hidden;
     }
     #wrap { width:100vw; height:100vh; margin:0; position:relative; overflow:hidden; }
     #info {
@@ -33,17 +35,7 @@
   </script>
 </head>
 <body>
-
-  <!-- VIDEO DE FONDO (no se muestra directo, se usa como textura) -->
-  <video
-    id="bgVideo"
-    src="videos/fondo.mp4"
-    autoplay
-    muted
-    loop
-    playsinline
-    style="display:none"
-  ></video>
+  <video id="bgVideo" src="videos/fondo.mp4" autoplay muted loop playsinline style="display:none"></video>
 
   <div id="wrap">
     <div id="info">Patos 3D (12) • un solo sonido: <b>sonidos/quack.mp3</b> • clic para olas • pasa el mouse cerca para graznar</div>
@@ -105,18 +97,13 @@
     import { SimplexNoise } from 'https://unpkg.com/three@0.160.0/examples/jsm/math/SimplexNoise.js';
     import { RGBELoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/RGBELoader.js';
 
-    // Fullscreen
     let VIEW_W = window.innerWidth;
     let VIEW_H = window.innerHeight;
 
-    // === Estanque (tamaño actual) ===
     const WIDTH=128;
     const BOUNDS_X=30.8, BOUNDS_Z=15.0;
     const HALF_X=BOUNDS_X*0.5, HALF_Z=BOUNDS_Z*0.5;
-
     const NUM_DUCK=12;
-
-    // HDR para reflejos en el agua (lo dejamos tal cual)
     const HDR_URL='https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/forest_slope_1k.hdr';
 
     let container=document.getElementById('wrap'), renderer, scene, camera, stats;
@@ -125,11 +112,19 @@
     let mousedown=false, mouseCoords=new THREE.Vector2();
     const simplex=new SimplexNoise(); let sun; let frame=0;
     const ducks=[], tmpQuat=new THREE.Quaternion(), tmpQuatX=new THREE.Quaternion(), tmpQuatZ=new THREE.Quaternion();
+
+    // Configuración del vuelo de los patos
+    const FLIGHT_DISTANCE = 1.5;
+    const FLIGHT_HEIGHT = 3.5;
+    const FLIGHT_DURATION = 2.5;
+    const FLIGHT_RETURN_DELAY = 4;
+    const FLIGHT_RETURN_DURATION = 1.5;
+    const MOUSE_SCARE_RADIUS = 1.2;
+
     const waterNormal=new THREE.Vector3();
     const effectController={ mouseSize:0.2, mouseDeep:0.01, viscosity:0.93, speed:5, ducksEnabled:true, wireframe:false, shadow:false };
     let readWaterLevelShader, readWaterLevelRenderTarget;
 
-    // Audio
     const QUACK_FILE = 'sonidos/quack.mp3';
     let listener, audioLoader, quackBuffer=null;
     let pointerWorld = new THREE.Vector2(9999,9999);
@@ -137,11 +132,9 @@
     let lastQuackTime = 0;
     const QUACK_THROTTLE = 0.18;
 
-    // Cámara
     const CAMERA_RADIUS = 11.0;
     let cameraAzimuthDeg = 90;
-    let currentElevDeg   = 30;
-
+    let currentElevDeg = 30;
     let viewCenter = new THREE.Vector2(0, 0);
     let panTweenActive = false;
     const CAMERA_BASE_Z = -1.2;
@@ -164,9 +157,7 @@
       const z0 = viewCenter.y;
       const z1 = targetZFromDeg(deg);
       const t0 = performance.now();
-
       function easeInOutCubic(t){ return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
-
       function step(now){
         const t = Math.min(1, (now - t0) / duration);
         const k = easeInOutCubic(t);
@@ -180,8 +171,8 @@
 
     function setCameraAngleDeg(elevDeg){
       const elev = THREE.MathUtils.degToRad(elevDeg);
-      const az   = THREE.MathUtils.degToRad(cameraAzimuthDeg);
-      const r    = CAMERA_RADIUS;
+      const az = THREE.MathUtils.degToRad(cameraAzimuthDeg);
+      const r = CAMERA_RADIUS;
       const x = r * Math.cos(elev) * Math.cos(az);
       const y = r * Math.sin(elev) + 2.5;
       const z = r * Math.cos(elev) * Math.sin(az) - 1.2;
@@ -197,12 +188,10 @@
       setCameraAngleDeg(currentElevDeg);
       scene = new THREE.Scene();
 
-      // Luz principal
       sun=new THREE.DirectionalLight(0xffffff,4.0);
       sun.position.set(-1,2.6,1.4);
       scene.add(sun);
 
-      // RENDERER
       renderer=new THREE.WebGLRenderer({antialias:true});
       renderer.setPixelRatio(window.devicePixelRatio);
       renderer.setSize(VIEW_W,VIEW_H);
@@ -215,23 +204,21 @@
         VIEW_H = window.innerHeight;
         camera.aspect = VIEW_W / VIEW_H;
         camera.updateProjectionMatrix();
-        renderer.setSize(VIEW_W, VIEW_H);
+        renderer.setSize(VIEW_W,VIEW_H);
         setCameraAngleDeg(currentElevDeg);
       });
 
-      // STATS
       stats=new Stats();
       stats.dom.style.left='0px';
       stats.dom.style.top='0px';
       container.appendChild(stats.dom);
 
-      // INPUT
       container.style.touchAction='none';
       container.addEventListener('pointermove', onPointerMove);
       container.addEventListener('pointerdown', ()=> { mousedown=true; resumeAudio(); });
-      container.addEventListener('pointerup',   ()=> { mousedown=false; });
+      container.addEventListener('pointerup', ()=> { mousedown=false; });
+      container.addEventListener('pointerleave', ()=> { pointerHasPoint=false; mousedown=false; });
 
-      // Botones de cámara (perfil/distintos ángulos)
       document.getElementById('btn45').addEventListener('click', ()=>{
         currentElevDeg = 45;
         setCameraAngleDeg(currentElevDeg);
@@ -245,7 +232,6 @@
         setCameraAngleDeg(currentElevDeg);
       });
 
-      // AUDIO
       listener = new THREE.AudioListener();
       camera.add(listener);
       audioLoader = new THREE.AudioLoader();
@@ -255,56 +241,39 @@
         });
       }catch(e){ console.warn('No se pudo cargar sonidos/quack.mp3', e); }
 
-      // HDR SOLO PARA ILUMINAR / REFLEJOS (mantenemos esto)
       try{
         const env=await new RGBELoader().loadAsync(HDR_URL);
         env.mapping=THREE.EquirectangularReflectionMapping;
         scene.environment=env;
-        scene.background = null; // fondo real será el video, no el HDR
+        scene.background = null;
         scene.environmentIntensity=1.25;
       }catch(e){
         console.warn('No se pudo cargar el HDR, usando color de fondo.', e);
         scene.environment=null;
       }
 
-      // ===== VIDEO DE FONDO EN UN PLANO VERTICAL DETRÁS DEL ESTANQUE =====
-      // ===== VIDEO DE FONDO EN UN PLANO VERTICAL DETRÁS DEL ESTANQUE =====
-const videoEl = document.getElementById('bgVideo');
-videoEl.play().catch(()=>{ /* algunos navegadores piden interacción */ });
+      const videoEl = document.getElementById('bgVideo');
+      videoEl.play().catch(()=>{});
+      const videoTexture = new THREE.VideoTexture(videoEl);
+      videoTexture.colorSpace = THREE.SRGBColorSpace;
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
 
-const videoTexture = new THREE.VideoTexture(videoEl);
-videoTexture.colorSpace = THREE.SRGBColorSpace;
-videoTexture.minFilter = THREE.LinearFilter;
-videoTexture.magFilter = THREE.LinearFilter;
+      const fondoWidth = BOUNDS_X + 4;
+      const fondoHeight = 6;
+      const fondoGeo = new THREE.PlaneGeometry(fondoWidth, fondoHeight);
+      const fondoMat = new THREE.MeshBasicMaterial({
+        map: videoTexture,
+        side: THREE.DoubleSide
+      });
+      const fondoMesh = new THREE.Mesh(fondoGeo, fondoMat);
+      const bordeTopY = 0.28;
+      fondoMesh.position.set(0, bordeTopY + fondoHeight / 2, -BOUNDS_Z / 2 - 0.6);
+      scene.add(fondoMesh);
 
-// Tamaño del video: un poco más ancho que el lago y más bajo
-        const fondoWidth  = BOUNDS_X + 4;  // un poquito más ancho que el estanque
-        const fondoHeight = 6;             // altura del video
-
-        const fondoGeo = new THREE.PlaneGeometry(fondoWidth, fondoHeight);
-        const fondoMat = new THREE.MeshBasicMaterial({
-          map: videoTexture,
-          side: THREE.DoubleSide
-        });
-
-        const fondoMesh = new THREE.Mesh(fondoGeo, fondoMat);
-
-        // Queremos que el video empiece justo desde la parte de arriba del marco del lago.
-        // El borde llega más o menos hasta y ≈ 0.28, así que dejamos la parte de abajo ahí.
-        const bordeTopY = 0.28;
-        fondoMesh.position.set(
-          0,
-          bordeTopY + fondoHeight / 2,    // centro del plano más arriba del borde
-          -BOUNDS_Z / 2 - 0.6             // justo detrás de la pared del fondo
-        );
-
-        scene.add(fondoMesh);
-
-
-      initWater();       // agua, borde, etc. (no lo tocamos)
-      createDucks3D();   // patos (no los tocamos)
+      initWater();
+      createDucks3D();
       setupGUI();
-
       renderer.setAnimationLoop(()=>{ render(); stats.update(); });
     }
 
@@ -341,47 +310,31 @@ videoTexture.magFilter = THREE.LinearFilter;
       mouseCoords.set(((e.clientX-rect.left)/rect.width)*2-1, -((e.clientY-rect.top)/rect.height)*2+1);
     }
 
-    // Árboles (ya no los uso, pero dejo la función por si luego quieres volver a ponerlos)
     function crearArbol(x, z){
       const troncoGeo = new THREE.CylinderGeometry(0.12, 0.16, 1.4, 12);
-      const copaGeo   = new THREE.SphereGeometry(0.9, 20, 16);
-
+      const copaGeo = new THREE.SphereGeometry(0.9, 20, 16);
       const troncoMat = new THREE.MeshStandardMaterial({ color: 0x5a3c1b, roughness: 0.8 });
-      const copaMat   = new THREE.MeshStandardMaterial({ color: 0x1f7a2e, roughness: 0.5 });
-
+      const copaMat = new THREE.MeshStandardMaterial({ color: 0x1f7a2e, roughness: 0.5 });
       const tronco = new THREE.Mesh(troncoGeo, troncoMat);
-      const copa   = new THREE.Mesh(copaGeo, copaMat);
-
+      const copa = new THREE.Mesh(copaGeo, copaMat);
       const arbol = new THREE.Group();
       tronco.position.y = 0.7;
-      copa.position.y   = 1.7;
-
-      arbol.add(tronco);
-      arbol.add(copa);
-
+      copa.position.y = 1.7;
+      arbol.add(tronco, copa);
       arbol.position.set(x, 0, z);
       arbol.castShadow = true;
       arbol.receiveShadow = true;
-
       arbol.traverse(o => {
-        if (o.isMesh){
-          o.castShadow = true;
-          o.receiveShadow = true;
-        }
+        if (o.isMesh){ o.castShadow = true; o.receiveShadow = true; }
       });
-
       scene.add(arbol);
     }
 
     function initWater(){
       const geometry=new THREE.PlaneGeometry(BOUNDS_X,BOUNDS_Z,WIDTH-1,WIDTH-1);
       const material=new WaterMaterial({
-        color:0x9bd2ec,
-        metalness:0.9,
-        roughness:0,
-        transparent:true,
-        opacity:0.85,
-        side:THREE.DoubleSide
+        color:0x9bd2ec, metalness:0.9, roughness:0,
+        transparent:true, opacity:0.85, side:THREE.DoubleSide
       });
       waterMesh=new THREE.Mesh(geometry,material);
       waterMesh.rotation.x=-Math.PI*0.5;
@@ -389,55 +342,34 @@ videoTexture.magFilter = THREE.LinearFilter;
       waterMesh.updateMatrix();
       scene.add(waterMesh);
 
-      // Marco más grueso
       poolBorder=new THREE.Group();
       const railH=0.28, railT=0.26;
       const m=new THREE.MeshStandardMaterial({color:0x908877, roughness:0.2});
       const railLong=new THREE.Mesh(new THREE.BoxGeometry(BOUNDS_X+railT*2, railH, railT), m);
       const railShort=new THREE.Mesh(new THREE.BoxGeometry(railT, railH, BOUNDS_Z+railT*2), m);
-      const r1=railLong.clone(); r1.position.set(0,railH/2,  BOUNDS_Z/2+railT/2);
-      const r2=railLong.clone(); r2.position.set(0,railH/2, -BOUNDS_Z/2-railT/2);
-      const r3=railShort.clone(); r3.position.set( BOUNDS_X/2+railT/2, railH/2, 0);
-      const r4=railShort.clone(); r4.position.set(-BOUNDS_X/2-railT/2, railH/2, 0);
+      const r1=railLong.clone(); r1.position.set(0,railH/2, BOUNDS_Z/2+railT/2);
+      const r2=railLong.clone(); r2.position.set(0,railH/2,-BOUNDS_Z/2-railT/2);
+      const r3=railShort.clone(); r3.position.set( BOUNDS_X/2+railT/2,railH/2,0);
+      const r4=railShort.clone(); r4.position.set(-BOUNDS_X/2-railT/2,railH/2,0);
       poolBorder.add(r1,r2,r3,r4);
 
-      const wallH = 0.20, wallT = 0.10;
-      const mwall = new THREE.MeshStandardMaterial({color:0x7f756a, roughness:0.35});
-      const wallLong=new THREE.Mesh(new THREE.BoxGeometry(BOUNDS_X, wallH, wallT), mwall);
-      const wallShort=new THREE.Mesh(new THREE.BoxGeometry(wallT, wallH, BOUNDS_Z), mwall);
-      const w1=wallLong.clone(); w1.position.set(0, wallH/2,  BOUNDS_Z/2 - wallT/2);
-      const w2=wallLong.clone(); w2.position.set(0, wallH/2, -BOUNDS_Z/2 + wallT/2);
-      const w3=wallShort.clone(); w3.position.set( BOUNDS_X/2 - wallT/2, wallH/2, 0);
-      const w4=wallShort.clone(); w4.position.set(-BOUNDS_X/2 + wallT/2, wallH/2, 0);
+      const wallH=0.20, wallT=0.10;
+      const mwall=new THREE.MeshStandardMaterial({color:0x7f756a, roughness:0.35});
+      const wallLong=new THREE.Mesh(new THREE.BoxGeometry(BOUNDS_X,wallH,wallT),mwall);
+      const wallShort=new THREE.Mesh(new THREE.BoxGeometry(wallT,wallH,BOUNDS_Z),mwall);
+      const w1=wallLong.clone(); w1.position.set(0,wallH/2, BOUNDS_Z/2-wallT/2);
+      const w2=wallLong.clone(); w2.position.set(0,wallH/2,-BOUNDS_Z/2+wallT/2);
+      const w3=wallShort.clone(); w3.position.set( BOUNDS_X/2-wallT/2,wallH/2,0);
+      const w4=wallShort.clone(); w4.position.set(-BOUNDS_X/2+wallT/2,wallH/2,0);
       poolBorder.add(w1,w2,w3,w4);
-
       scene.add(poolBorder);
 
-      // *** IMPORTANTE: quitamos el césped y los árboles viejos para que se vea el video ***
-      // (si los quieres de nuevo, solo descomentas esto)
-      /*
-      const grassGeo = new THREE.PlaneGeometry(80, 80);
-      const grassMat = new THREE.MeshStandardMaterial({
-        color: 0x1f5d1f,
-        roughness: 0.9,
-        metalness: 0.0
-      });
-      const grass = new THREE.Mesh(grassGeo, grassMat);
-      grass.rotation.x = -Math.PI / 2;
-      grass.position.y = -0.03;
-      grass.receiveShadow = true;
-      scene.add(grass);
-
-      crearArbol( 18,  8);
-      crearArbol(-18,  8);
-      crearArbol( 18, -8);
-      crearArbol(-18, -8);
-      crearArbol(  0, 11);
-      crearArbol(  0,-11);
-      */
-
       const geometryRay=new THREE.PlaneGeometry(BOUNDS_X,BOUNDS_Z,1,1);
-      meshRay=new THREE.Mesh(geometryRay,new THREE.MeshBasicMaterial({visible:false}));
+      // Plano invisible visualmente, pero detectable por Raycaster.
+      meshRay=new THREE.Mesh(geometryRay,new THREE.MeshBasicMaterial({
+        side:THREE.DoubleSide,
+        colorWrite:false
+      }));
       meshRay.rotation.x=-Math.PI/2;
       meshRay.matrixAutoUpdate=false;
       meshRay.updateMatrix();
@@ -447,12 +379,12 @@ videoTexture.magFilter = THREE.LinearFilter;
       gpuCompute=gpu;
       const heightmap0=gpuCompute.createTexture();
       fillTexture(heightmap0);
-      heightmapVariable=gpuCompute.addVariable('heightmap', shaderChange.heightmap_frag, heightmap0);
+      heightmapVariable=gpuCompute.addVariable('heightmap',shaderChange.heightmap_frag,heightmap0);
       gpuCompute.setVariableDependencies(heightmapVariable,[heightmapVariable]);
-      heightmapVariable.material.uniforms['mousePos']={value: new THREE.Vector2(10000,10000)};
-      heightmapVariable.material.uniforms['mouseSize']={value: 0.2};
-      heightmapVariable.material.uniforms['viscosity']={value: 0.93};
-      heightmapVariable.material.uniforms['deep']={value: 0.01};
+      heightmapVariable.material.uniforms['mousePos']={value:new THREE.Vector2(10000,10000)};
+      heightmapVariable.material.uniforms['mouseSize']={value:0.2};
+      heightmapVariable.material.uniforms['viscosity']={value:0.93};
+      heightmapVariable.material.uniforms['deep']={value:0.01};
       heightmapVariable.material.defines.BOUNDS_X=BOUNDS_X.toFixed(1);
       heightmapVariable.material.defines.BOUNDS_Z=BOUNDS_Z.toFixed(1);
       const error=gpuCompute.init();
@@ -460,19 +392,15 @@ videoTexture.magFilter = THREE.LinearFilter;
 
       readWaterLevelShader=gpuCompute.createShaderMaterial(
         document.getElementById('readWaterLevelFragmentShader').textContent,
-        { point1:{value:new THREE.Vector2()}, levelTexture:{value:null} }
+        {point1:{value:new THREE.Vector2()},levelTexture:{value:null}}
       );
       readWaterLevelShader.defines.WIDTH=WIDTH.toFixed(1);
       readWaterLevelShader.defines.BOUNDS_X=BOUNDS_X.toFixed(1);
       readWaterLevelShader.defines.BOUNDS_Z=BOUNDS_Z.toFixed(1);
       readWaterLevelRenderTarget=new THREE.WebGLRenderTarget(4,1,{
-        wrapS:THREE.ClampToEdgeWrapping,
-        wrapT:THREE.ClampToEdgeWrapping,
-        minFilter:THREE.NearestFilter,
-        magFilter:THREE.NearestFilter,
-        format:THREE.RGBAFormat,
-        type:THREE.UnsignedByteType,
-        depthBuffer:false
+        wrapS:THREE.ClampToEdgeWrapping, wrapT:THREE.ClampToEdgeWrapping,
+        minFilter:THREE.NearestFilter, magFilter:THREE.NearestFilter,
+        format:THREE.RGBAFormat, type:THREE.UnsignedByteType, depthBuffer:false
       });
     }
 
@@ -500,107 +428,70 @@ videoTexture.magFilter = THREE.LinearFilter;
     }
 
     function buildRubberDuck(bodyHex=0xffdd17){
-      const duck = new THREE.Group();
-      const bodyMat = new THREE.MeshPhysicalMaterial({
-        color: bodyHex, roughness: 0.15, metalness: 0,
-        clearcoat: 1.0, clearcoatRoughness: 0.08
+      const duck=new THREE.Group();
+      const bodyMat=new THREE.MeshPhysicalMaterial({
+        color:bodyHex,roughness:0.15,metalness:0,clearcoat:1.0,clearcoatRoughness:0.08
       });
-      const orange = new THREE.MeshPhysicalMaterial({
-        color: 0xff7a1a, roughness: 0.2, metalness: 0, clearcoat: 0.3
-      });
-      const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.3, roughness: 0.1 });
-      const white  = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35 });
+      const orange=new THREE.MeshPhysicalMaterial({color:0xff7a1a,roughness:0.2,metalness:0,clearcoat:0.3});
+      const eyeMat=new THREE.MeshStandardMaterial({color:0x111111,metalness:0.3,roughness:0.1});
+      const white=new THREE.MeshStandardMaterial({color:0xffffff,roughness:0.35});
 
-      const body = new THREE.Mesh(new THREE.SphereGeometry(0.42, 40, 32), bodyMat);
-      body.scale.set(1.25, 1.0, 1.1);
-      body.position.set(0, 0.22, 0);
-      duck.add(body);
+      const body=new THREE.Mesh(new THREE.SphereGeometry(0.42,40,32),bodyMat);
+      body.scale.set(1.25,1.0,1.1); body.position.set(0,0.22,0); duck.add(body);
+      const neck=new THREE.Mesh(new THREE.CapsuleGeometry(0.12,0.06,8,20),bodyMat);
+      neck.rotation.z=-0.18; neck.position.set(0.06,0.40,0.10); duck.add(neck);
+      const head=new THREE.Mesh(new THREE.SphereGeometry(0.26,36,28),bodyMat);
+      head.position.set(0.18,0.56,0.16); duck.add(head);
+      const upperBeak=new THREE.Mesh(new THREE.SphereGeometry(0.12,28,20),orange);
+      upperBeak.scale.set(1.45,0.55,0.8); upperBeak.position.set(0.32,0.51,0.26); duck.add(upperBeak);
+      const lowerBeak=new THREE.Mesh(new THREE.SphereGeometry(0.11,24,18),orange);
+      lowerBeak.scale.set(1.1,0.45,0.75); lowerBeak.position.set(0.31,0.47,0.24); duck.add(lowerBeak);
+      const eyeL=new THREE.Mesh(new THREE.SphereGeometry(0.035,16,12),eyeMat);
+      eyeL.position.set(0.11,0.58,0.27);
+      const eyeR=eyeL.clone(); eyeR.position.set(0.22,0.585,0.10); duck.add(eyeL,eyeR);
+      const sparkL=new THREE.Mesh(new THREE.SphereGeometry(0.012,8,8),white);
+      sparkL.position.set(0.125,0.595,0.285);
+      const sparkR=sparkL.clone(); sparkR.position.set(0.235,0.60,0.115); duck.add(sparkL,sparkR);
+      const wingL=new THREE.Mesh(new THREE.SphereGeometry(0.2,28,22),bodyMat);
+      wingL.scale.set(0.52,0.62,0.28); wingL.position.set(-0.17,0.30,0.05); wingL.rotation.z=0.62;
+      const wingR=wingL.clone(); wingR.position.x*=-1; wingR.rotation.z=-0.62; duck.add(wingL,wingR);
+      const tail=new THREE.Mesh(new THREE.SphereGeometry(0.18,24,18),bodyMat);
+      tail.scale.set(0.48,0.36,0.26); tail.position.set(-0.32,0.26,-0.10); tail.rotation.z=-0.45; duck.add(tail);
+      duck.scale.set(1,1,1);
+      duck.userData.head=head;
+      duck.userData.upperBeak=upperBeak;
+      duck.userData.lowerBeak=lowerBeak;
+      duck.userData.wings=[wingL,wingR];
+      duck.userData.phase=Math.random()*Math.PI*2;
 
-      const neck = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.06, 8, 20), bodyMat);
-      neck.rotation.z = -0.18;
-      neck.position.set(0.06, 0.40, 0.10);
-      duck.add(neck);
-
-      const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 36, 28), bodyMat);
-      head.position.set(0.18, 0.56, 0.16);
-      duck.add(head);
-
-      const upperBeak = new THREE.Mesh(new THREE.SphereGeometry(0.12, 28, 20), orange);
-      upperBeak.scale.set(1.45, 0.55, 0.8);
-      upperBeak.position.set(0.32, 0.51, 0.26);
-      duck.add(upperBeak);
-
-      const lowerBeak = new THREE.Mesh(new THREE.SphereGeometry(0.11, 24, 18), orange);
-      lowerBeak.scale.set(1.1, 0.45, 0.75);
-      lowerBeak.position.set(0.31, 0.47, 0.24);
-      duck.add(lowerBeak);
-
-      const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.035, 16, 12), eyeMat);
-      eyeL.position.set(0.11, 0.58, 0.27);
-      const eyeR = eyeL.clone(); eyeR.position.set(0.22, 0.585, 0.10);
-      duck.add(eyeL, eyeR);
-
-      const sparkL = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 8), white);
-      sparkL.position.set(0.125, 0.595, 0.285);
-      const sparkR = sparkL.clone(); sparkR.position.set(0.235, 0.60, 0.115);
-      duck.add(sparkL, sparkR);
-
-      const wingL = new THREE.Mesh(new THREE.SphereGeometry(0.2, 28, 22), bodyMat);
-      wingL.scale.set(0.52, 0.62, 0.28);
-      wingL.position.set(-0.17, 0.30, 0.05);
-      wingL.rotation.z = 0.62;
-      const wingR = wingL.clone();
-      wingR.position.x *= -1;
-      wingR.rotation.z = -0.62;
-      duck.add(wingL, wingR);
-
-      const tail = new THREE.Mesh(new THREE.SphereGeometry(0.18, 24, 18), bodyMat);
-      tail.scale.set(0.48, 0.36, 0.26);
-      tail.position.set(-0.32, 0.26, -0.10);
-      tail.rotation.z = -0.45;
-      duck.add(tail);
-
-      duck.scale.set(1, 1, 1);
-
-      duck.userData.head = head;
-      duck.userData.upperBeak = upperBeak;
-      duck.userData.lowerBeak = lowerBeak;
-      duck.userData.wings = [wingL, wingR];
-      duck.userData.phase = Math.random() * Math.PI * 2;
-
-      const audio = new THREE.PositionalAudio(listener);
+      const audio=new THREE.PositionalAudio(listener);
       audio.setRefDistance(1.0);
       audio.setRolloffFactor(1.2);
       audio.setDistanceModel('exponential');
       audio.setLoop(false);
       audio.setVolume(0.70);
       duck.add(audio);
-      duck.userData.audio = audio;
-      duck.userData.cooldown = 0;
-
-      duck.traverse(o => {
-        if (o.isMesh){
-          o.castShadow = true;
-          o.receiveShadow = true;
-        }
+      duck.userData.audio=audio;
+      duck.userData.cooldown=0;
+      duck.traverse(o=>{
+        if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}
       });
       return duck;
     }
 
     function createDucks3D(){
-      const duckColors = [
-        0xffdd17,0xffdd17,0xffdd17,
-        0xffffff,0xffffff,0xffffff,
-        0x8b5a2b,0x8b5a2b,0x8b5a2b,
-        0x9da4ad,0x9da4ad,0x9da4ad
-      ];
+      const duckColors=[0xffdd17,0xffdd17,0xffdd17,0xffffff,0xffffff,0xffffff,0x8b5a2b,0x8b5a2b,0x8b5a2b,0x9da4ad,0x9da4ad,0x9da4ad];
       for(let i=0;i<NUM_DUCK;i++){
-        const colorHex = duckColors[i % duckColors.length];
-        const d=buildRubberDuck(colorHex);
-        if(quackBuffer){ d.userData.audio.setBuffer(quackBuffer); }
+        const d=buildRubberDuck(duckColors[i%duckColors.length]);
+        if(quackBuffer) d.userData.audio.setBuffer(quackBuffer);
         d.position.x=(Math.random()-0.5)*BOUNDS_X*0.7;
         d.position.z=(Math.random()-0.5)*BOUNDS_Z*0.7;
         d.userData.velocity=new THREE.Vector3();
+        d.userData.flying=false;
+        d.userData.flightStart=0;
+        d.userData.flightOrigin=new THREE.Vector3();
+        d.userData.flightTarget=new THREE.Vector3();
+        d.userData.flightDirection=new THREE.Vector3();
         scene.add(d);
         ducks.push(d);
       }
@@ -608,50 +499,47 @@ videoTexture.magFilter = THREE.LinearFilter;
 
     function floatDynamics(list){
       if(!tmpHeightmap) return;
-      const readWaterLevelShader=gpuCompute.createShaderMaterial(
+      const shader=gpuCompute.createShaderMaterial(
         document.getElementById('readWaterLevelFragmentShader').textContent,
-        { point1:{value:new THREE.Vector2()}, levelTexture:{value:tmpHeightmap} }
+        {point1:{value:new THREE.Vector2()},levelTexture:{value:tmpHeightmap}}
       );
-      readWaterLevelShader.defines.WIDTH=WIDTH.toFixed(1);
-      readWaterLevelShader.defines.BOUNDS_X=BOUNDS_X.toFixed(1);
-      readWaterLevelShader.defines.BOUNDS_Z=BOUNDS_Z.toFixed(1);
+      shader.defines.WIDTH=WIDTH.toFixed(1);
+      shader.defines.BOUNDS_X=BOUNDS_X.toFixed(1);
+      shader.defines.BOUNDS_Z=BOUNDS_Z.toFixed(1);
       const rt=new THREE.WebGLRenderTarget(4,1,{
-        minFilter:THREE.NearestFilter,
-        magFilter:THREE.NearestFilter,
-        format:THREE.RGBAFormat,
-        type:THREE.UnsignedByteType
+        minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter,
+        format:THREE.RGBAFormat,type:THREE.UnsignedByteType
       });
       for(const obj of list){
+        if(obj.userData.flying) continue;
         const u=0.5*obj.position.x/HALF_X+0.5;
         const v=1-(0.5*obj.position.z/HALF_Z+0.5);
-        readWaterLevelShader.uniforms['point1'].value.set(u,v);
-        gpuCompute.doRenderTarget(readWaterLevelShader, rt);
+        shader.uniforms['point1'].value.set(u,v);
+        gpuCompute.doRenderTarget(shader,rt);
         const arr=new Uint8Array(16);
         renderer.readRenderTargetPixels(rt,0,0,4,1,arr);
         const px=new Float32Array(arr.buffer);
         const pos=obj.position, startPos=pos.clone();
-        const normal = new THREE.Vector3(px[1],1,-px[2]).normalize();
+        const normal=new THREE.Vector3(px[1],1,-px[2]).normalize();
         pos.y=px[0];
         waterNormal.set(px[1],0,-px[2]).multiplyScalar(0.010);
         obj.userData.velocity.add(waterNormal);
         obj.userData.velocity.multiplyScalar(0.998);
         pos.add(obj.userData.velocity);
-        const decal=0.001, limitX=HALF_X-0.2, limitZ=HALF_Z-0.2;
-        if(pos.x<-limitX){ pos.x=-limitX+decal; obj.userData.velocity.x*=-0.3; }
-        else if(pos.x>limitX){ pos.x=limitX-decal; obj.userData.velocity.x*=-0.3; }
-        if(pos.z<-limitZ){ pos.z=-limitZ+decal; obj.userData.velocity.z*=-0.3; }
-        else if(pos.z>limitZ){ pos.z=limitZ-decal; obj.userData.velocity.z*=-0.3; }
-        const dir=startPos.sub(pos);
-        dir.y=0;
-        dir.normalize();
-        const yAxis=new THREE.Vector3(0,1,0), zAxis=new THREE.Vector3(0,0,-1);
-        tmpQuatX.setFromUnitVectors(zAxis, dir.lengthSq()>0?dir:zAxis);
-        tmpQuatZ.setFromUnitVectors(yAxis, normal);
+        const decal=0.001,limitX=HALF_X-0.2,limitZ=HALF_Z-0.2;
+        if(pos.x<-limitX){pos.x=-limitX+decal;obj.userData.velocity.x*=-0.3;}
+        else if(pos.x>limitX){pos.x=limitX-decal;obj.userData.velocity.x*=-0.3;}
+        if(pos.z<-limitZ){pos.z=-limitZ+decal;obj.userData.velocity.z*=-0.3;}
+        else if(pos.z>limitZ){pos.z=limitZ-decal;obj.userData.velocity.z*=-0.3;}
+        const dir=startPos.sub(pos); dir.y=0; dir.normalize();
+        const yAxis=new THREE.Vector3(0,1,0),zAxis=new THREE.Vector3(0,0,-1);
+        tmpQuatX.setFromUnitVectors(zAxis,dir.lengthSq()>0?dir:zAxis);
+        tmpQuatZ.setFromUnitVectors(yAxis,normal);
         tmpQuat.multiplyQuaternions(tmpQuatZ,tmpQuatX);
-        obj.quaternion.slerp(tmpQuat, 0.017);
+        obj.quaternion.slerp(tmpQuat,0.017);
       }
       rt.dispose();
-      readWaterLevelShader.dispose();
+      shader.dispose();
     }
 
     function addShadow(v){
@@ -659,17 +547,13 @@ videoTexture.magFilter = THREE.LinearFilter;
       sun.castShadow=v;
       if(v){
         renderer.shadowMap.type=THREE.VSMShadowMap;
-        const s=6, sh=sun.shadow;
+        const s=6,sh=sun.shadow;
         sh.mapSize.width=sh.mapSize.height=2048;
-        sh.radius=2;
-        sh.bias=-0.0005;
+        sh.radius=2;sh.bias=-0.0005;
         const cam=sh.camera;
-        cam.near=0.1; cam.far=12;
-        cam.right=cam.top=s;
-        cam.left=cam.bottom=-s;
-      } else if(sun.shadow){
-        sun.shadow.dispose();
-      }
+        cam.near=0.1;cam.far=12;
+        cam.right=cam.top=s;cam.left=cam.bottom=-s;
+      }else if(sun.shadow){sun.shadow.dispose();}
     }
 
     function raycastUpdate(){
@@ -682,12 +566,8 @@ videoTexture.magFilter = THREE.LinearFilter;
         if(hit.length>0){
           const pt=hit[0].point;
           uniforms['mousePos'].value.set(pt.x,pt.z);
-        } else {
-          uniforms['mousePos'].value.set(10000,10000);
-        }
-      } else {
-        uniforms['mousePos'].value.set(10000,10000);
-      }
+        }else{uniforms['mousePos'].value.set(10000,10000);}
+      }else{uniforms['mousePos'].value.set(10000,10000);}
     }
 
     function updatePointerWorld(){
@@ -695,28 +575,26 @@ videoTexture.magFilter = THREE.LinearFilter;
       ray.setFromCamera(mouseCoords,camera);
       const hit=ray.intersectObject(meshRay);
       if(hit.length>0){
-        pointerWorld.set(hit[0].point.x, hit[0].point.z);
-        pointerHasPoint = true;
-      } else {
-        pointerHasPoint = false;
-      }
+        pointerWorld.set(hit[0].point.x,hit[0].point.z);
+        pointerHasPoint=true;
+      }else{pointerHasPoint=false;}
     }
 
     function maybeTriggerQuacks(timeSec){
-      if(!pointerHasPoint || !quackBuffer) return;
-      if(timeSec - lastQuackTime < QUACK_THROTTLE) return;
+      if(!pointerHasPoint||!quackBuffer) return;
+      if(timeSec-lastQuackTime<QUACK_THROTTLE) return;
       for(const d of ducks){
-        d.userData.cooldown = Math.max(0, d.userData.cooldown - 1/60);
-        const dx = d.position.x - pointerWorld.x;
-        const dz = d.position.z - pointerWorld.y;
-        const dist = Math.hypot(dx,dz);
-        if(dist < 0.75 && d.userData.cooldown<=0){
-          const audio = d.userData.audio;
-          if(audio && audio.buffer && !audio.isPlaying){
-            audio.setPlaybackRate(0.9 + Math.random()*0.25);
+        d.userData.cooldown=Math.max(0,d.userData.cooldown-1/60);
+        const dx=d.position.x-pointerWorld.x;
+        const dz=d.position.z-pointerWorld.y;
+        const dist=Math.hypot(dx,dz);
+        if(dist<0.75&&d.userData.cooldown<=0){
+          const audio=d.userData.audio;
+          if(audio&&audio.buffer&&!audio.isPlaying){
+            audio.setPlaybackRate(0.9+Math.random()*0.25);
             audio.play();
-            d.userData.cooldown = 1.1;
-            lastQuackTime = timeSec;
+            d.userData.cooldown=1.1;
+            lastQuackTime=timeSec;
             break;
           }
         }
@@ -732,32 +610,108 @@ videoTexture.magFilter = THREE.LinearFilter;
     function animateCritters(timeSec){
       for(const d of ducks){
         if(!d.visible) continue;
-        const t = timeSec + d.userData.phase;
-        if (d.userData.head)       d.userData.head.rotation.z = Math.sin(t*2.2) * 0.25;
-        if (d.userData.upperBeak)  d.userData.upperBeak.rotation.x = 0.10 + Math.sin(t*3.0) * 0.06;
-        if (d.userData.lowerBeak)  d.userData.lowerBeak.rotation.x = 0.03 + Math.sin(t*3.0 + 0.7) * 0.05;
-        if (d.userData.wings){
-          d.userData.wings[0].rotation.z = 0.62 + Math.sin(t*1.7)*0.18;
-          d.userData.wings[1].rotation.z = -0.62 - Math.sin(t*1.7)*0.18;
+        const t=timeSec+d.userData.phase;
+        if(d.userData.head) d.userData.head.rotation.z=Math.sin(t*2.2)*0.25;
+        if(d.userData.upperBeak) d.userData.upperBeak.rotation.x=0.10+Math.sin(t*3.0)*0.06;
+        if(d.userData.lowerBeak) d.userData.lowerBeak.rotation.x=0.03+Math.sin(t*3.0+0.7)*0.05;
+        if(d.userData.wings&&!d.userData.flying){
+          d.userData.wings[0].rotation.z=0.62+Math.sin(t*1.7)*0.18;
+          d.userData.wings[1].rotation.z=-0.62-Math.sin(t*1.7)*0.18;
         }
+      }
+    }
+
+    function scareDuck(duck,timeSec){
+      if(duck.userData.flying) return;
+      const data=duck.userData;
+      data.flying=true;
+      data.flightStart=timeSec;
+      data.flightOrigin.copy(duck.position);
+
+      const direction=new THREE.Vector3(
+        duck.position.x-pointerWorld.x,
+        0,
+        duck.position.z-pointerWorld.y
+      );
+      if(direction.lengthSq()<0.001){
+        direction.set(Math.random()-0.5,0,Math.random()-0.5);
+      }
+      direction.normalize();
+      data.flightDirection.copy(direction);
+
+      data.flightTarget.set(
+        duck.position.x+direction.x*FLIGHT_DISTANCE*3,
+        FLIGHT_HEIGHT,
+        duck.position.z+direction.z*FLIGHT_DISTANCE*3
+      );
+      data.flightTarget.x=THREE.MathUtils.clamp(data.flightTarget.x,-HALF_X+1,HALF_X-1);
+      data.flightTarget.z=THREE.MathUtils.clamp(data.flightTarget.z,-HALF_Z+1,HALF_Z-1);
+      duck.rotation.z=-direction.x*0.25;
+    }
+
+    function updateDuckFlights(timeSec){
+      for(const duck of ducks){
+        const data=duck.userData;
+        if(!data.flying) continue;
+        const elapsed=timeSec-data.flightStart;
+        const flightEnd=FLIGHT_DURATION;
+        const returnEnd=flightEnd+FLIGHT_RETURN_DELAY;
+
+        if(elapsed<flightEnd){
+          const progress=elapsed/flightEnd;
+          const smooth=progress*progress*(3-2*progress);
+          duck.position.lerpVectors(data.flightOrigin,data.flightTarget,smooth);
+          const flap=Math.sin(elapsed*25)*0.65;
+          if(data.wings){
+            data.wings[0].rotation.z=0.62+flap;
+            data.wings[1].rotation.z=-0.62-flap;
+          }
+        }else if(elapsed<returnEnd){
+          duck.position.copy(data.flightTarget);
+          const flap=Math.sin(elapsed*25)*0.65;
+          if(data.wings){
+            data.wings[0].rotation.z=0.62+flap;
+            data.wings[1].rotation.z=-0.62-flap;
+          }
+        }else{
+          const returnProgress=Math.min((elapsed-returnEnd)/FLIGHT_RETURN_DURATION,1);
+          const smooth=returnProgress*returnProgress*(3-2*returnProgress);
+          // Volver a la posición y altura que tenía el pato antes de despegar.
+          const landingPosition=data.flightOrigin.clone();
+          duck.position.lerpVectors(data.flightTarget,landingPosition,smooth);
+
+          if(returnProgress>=1){
+            data.flying=false;
+            duck.position.copy(landingPosition);
+            duck.rotation.z=0;
+            data.velocity.set(0,0,0);
+          }
+        }
+      }
+    }
+
+    function detectScaredDucks(timeSec){
+      if(!pointerHasPoint) return;
+      for(const duck of ducks){
+        if(duck.userData.flying||!duck.visible) continue;
+        const dx=duck.position.x-pointerWorld.x;
+        const dz=duck.position.z-pointerWorld.y;
+        const distance=Math.hypot(dx,dz);
+        if(distance<MOUSE_SCARE_RADIUS) scareDuck(duck,timeSec);
       }
     }
 
     function render(){
       raycastUpdate();
       updatePointerWorld();
-
       frame++;
-      if(frame>=7-effectController.speed){
-        animateStep();
-        frame=0;
-      }
-
+      if(frame>=7-effectController.speed){animateStep();frame=0;}
       if(effectController.ducksEnabled) floatDynamics(ducks);
-      const tSec = performance.now()/1000;
+      const tSec=performance.now()/1000;
+      detectScaredDucks(tSec);
+      updateDuckFlights(tSec);
       animateCritters(tSec);
       maybeTriggerQuacks(tSec);
-
       renderer.render(scene,camera);
     }
 
@@ -765,11 +719,8 @@ videoTexture.magFilter = THREE.LinearFilter;
       constructor(parameters){
         super();
         this.defines={
-          'STANDARD':'',
-          'USE_UV':'',
-          'WIDTH':WIDTH.toFixed(1),
-          'BOUNDS_X':BOUNDS_X.toFixed(1),
-          'BOUNDS_Z':BOUNDS_Z.toFixed(1)
+          'STANDARD':'','USE_UV':'','WIDTH':WIDTH.toFixed(1),
+          'BOUNDS_X':BOUNDS_X.toFixed(1),'BOUNDS_Z':BOUNDS_Z.toFixed(1)
         };
         this.extra={};
         this.addParameter('heightmap',null);
@@ -786,12 +737,10 @@ videoTexture.magFilter = THREE.LinearFilter;
         });
       }
       onBeforeCompile(shader){
-        for(const n in this.extra){
-          shader.uniforms[n]={value:this.extra[n]};
-        }
-        shader.vertexShader=shader.vertexShader.replace('#include <common>', shaderChange.common);
-        shader.vertexShader=shader.vertexShader.replace('#include <beginnormal_vertex>', shaderChange.beginnormal_vertex);
-        shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>', shaderChange.begin_vertex);
+        for(const n in this.extra){shader.uniforms[n]={value:this.extra[n]};}
+        shader.vertexShader=shader.vertexShader.replace('#include <common>',shaderChange.common);
+        shader.vertexShader=shader.vertexShader.replace('#include <beginnormal_vertex>',shaderChange.beginnormal_vertex);
+        shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>',shaderChange.begin_vertex);
         this.userData.shader=shader;
       }
     }
@@ -807,13 +756,13 @@ videoTexture.magFilter = THREE.LinearFilter;
           vec2 cs=1.0/resolution.xy;
           vec2 uv=gl_FragCoord.xy*cs;
           vec4 hm=texture2D(heightmap,uv);
-          vec4 n=texture2D(heightmap, uv+vec2(0.0, cs.y));
-          vec4 s=texture2D(heightmap, uv+vec2(0.0,-cs.y));
-          vec4 e=texture2D(heightmap, uv+vec2(cs.x,0.0));
-          vec4 w=texture2D(heightmap, uv+vec2(-cs.x,0.0));
-          float nh=((n.x+s.x+e.x+w.x)*0.5 - hm.y)*viscosity;
+          vec4 n=texture2D(heightmap,uv+vec2(0.0,cs.y));
+          vec4 s=texture2D(heightmap,uv+vec2(0.0,-cs.y));
+          vec4 e=texture2D(heightmap,uv+vec2(cs.x,0.0));
+          vec4 w=texture2D(heightmap,uv+vec2(-cs.x,0.0));
+          float nh=((n.x+s.x+e.x+w.x)*0.5-hm.y)*viscosity;
           float ph=clamp(length((uv-vec2(0.5))*vec2(BOUNDS_X,BOUNDS_Z)-vec2(mousePos.x,-mousePos.y))*PI/mouseSize,0.0,PI);
-          nh -= (cos(ph)+1.0)*deep;
+          nh-=(cos(ph)+1.0)*deep;
           hm.y=hm.x;
           hm.x=nh;
           gl_FragColor=hm;
@@ -824,15 +773,24 @@ uniform sampler2D heightmap;`,
       beginnormal_vertex:`
         vec2 cs=vec2(1.0/WIDTH,1.0/WIDTH);
         vec3 objectNormal=vec3(
-          (texture2D(heightmap, uv+vec2(-cs.x,0)).x - texture2D(heightmap, uv+vec2(cs.x,0)).x)*WIDTH/BOUNDS_X,
-          (texture2D(heightmap, uv+vec2(0,-cs.y)).x - texture2D(heightmap, uv+vec2(0,cs.y)).x)*WIDTH/BOUNDS_Z,
+          (texture2D(heightmap,uv+vec2(-cs.x,0)).x-texture2D(heightmap,uv+vec2(cs.x,0)).x)*WIDTH/BOUNDS_X,
+          (texture2D(heightmap,uv+vec2(0,-cs.y)).x-texture2D(heightmap,uv+vec2(0,cs.y)).x)*WIDTH/BOUNDS_Z,
           1.0);
       `,
       begin_vertex:`
-        float heightValue=texture2D(heightmap, uv).x;
-        vec3 transformed=vec3(position.x, position.y, heightValue);
+        float heightValue=texture2D(heightmap,uv).x;
+        vec3 transformed=vec3(position.x,position.y,heightValue);
       `
     };
   </script>
 </body>
 </html>
+'''
+
+path = Path("/mnt/data/estanque_patos_vuelo.html")
+path.write_text(html, encoding="utf-8")
+print(f"Archivo creado: {path.name} ({len(html):,} caracteres)")
+
+      
+      
+     
